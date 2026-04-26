@@ -209,16 +209,3 @@ transcribe-audio batch /tmp/transcribe-audio-smoke/input.wav \
   --formats txt,json \
   --json
 ```
-
-## Public Repo Notes
-
-This repo is intended to be safe to publish publicly:
-
-- no credentials
-- no bundled transcript outputs
-- no local model files
-- no downloaded audio
-- no private config
-
-Models and transcription artifacts should stay outside the repo unless they are
-small, synthetic fixtures.
