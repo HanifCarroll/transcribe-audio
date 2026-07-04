@@ -13,6 +13,22 @@ The tool is intentionally a workbench instead of a fully automatic note taker:
 it handles repeatable audio plumbing while leaving judgment about prompts,
 preprocessing, retries, titles, and final notes to the agent or human running it.
 
+## Set It Up With An Agent
+
+Copy this prompt into your coding agent:
+
+```text
+Set up this local transcription workbench for me:
+https://github.com/HanifCarroll/transcribe-audio
+
+Clone the repo if needed, install the Python CLI with uv, run the doctor check,
+download the default MLX large-v3 model, and verify that `transcribe-audio
+doctor --json` works. If your environment supports skills, install or adapt the
+public skill at `skills/transcribe-audio-to-vault/SKILL.md` so future agents can
+use the CLI to turn audio files into sourced Markdown notes. Keep audio files,
+transcripts, generated artifacts, and model files out of git.
+```
+
 ## Features
 
 - MLX Whisper `large-v3` default for high-quality Apple Silicon transcription
@@ -161,6 +177,18 @@ transcribe-audio note ./transcripts/audio.txt \
 8. Choose a descriptive note title from the content.
 9. Run `note` with date, source, backend, model, and raw JSON provenance.
 10. If warnings or review uncertainties remain, report them explicitly.
+
+## Agent Skill
+
+This repo includes a public Codex-style skill at:
+
+```text
+skills/transcribe-audio-to-vault/SKILL.md
+```
+
+The skill gives agents a repeatable workflow for using this CLI to turn audio
+files into reviewed, sourced Markdown notes. It assumes `transcribe-audio` is
+installed on `PATH` or can be run from a checkout with `uv run`.
 
 ## Commands
 
