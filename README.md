@@ -7,7 +7,7 @@ automation.
 transcript artifacts. It uses [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
 by default on Apple Silicon, keeps `txt` and `json` outputs for agent review, and
 includes helpers for silence preprocessing, transcript quality checks, batch
-runs, and Obsidian-friendly Markdown notes.
+runs, timestamped review clips, and Obsidian-friendly Markdown notes.
 
 The tool is intentionally a workbench instead of a fully automatic note taker:
 it handles repeatable audio plumbing while leaving judgment about prompts,
@@ -22,6 +22,7 @@ preprocessing, retries, titles, and final notes to the agent or human running it
 - JSON summaries designed for automation and coding agents
 - Batch transcription with a run manifest
 - Lightweight quality warnings for common silence hallucination markers
+- Timestamped review windows and clip extraction for uncertain transcript text
 - Markdown note writer with date, source, backend, model, and raw artifact
   provenance
 
@@ -120,6 +121,18 @@ Check a transcript for common hallucination markers:
 transcribe-audio quality ./transcripts/audio.txt --json
 ```
 
+Build review windows for low-confidence words or suspect phrases, then extract
+short clips for targeted re-transcription:
+
+```sh
+transcribe-audio review ./transcripts/audio.json \
+  --audio ./transcripts/audio-desilenced.wav \
+  --phrase "Probably the trackpad" \
+  --extract-clips \
+  --output-dir ./transcripts/review \
+  --json
+```
+
 Wrap a transcript into an Obsidian note with frontmatter:
 
 ```sh
@@ -140,10 +153,14 @@ transcribe-audio note ./transcripts/audio.txt \
 3. Use `preprocess` when long silence is likely or quality warnings appear.
 4. Run `transcribe` with the MLX default and keep `txt,json` artifacts.
 5. Run `quality` on the text transcript.
-6. Choose a descriptive note title from the content.
-7. Run `note` with date, source, backend, model, and raw JSON provenance.
-8. If warnings remain, retry with preprocessing or compare with
-   `--backend whisper-cpp`; report unresolved warnings.
+6. Run `review` on raw JSON when text looks garbled or names/tools are
+   uncertain. Use the same audio file that was transcribed, such as the
+   preprocessed/desilenced file when one was used.
+7. Use extracted clips and emitted re-transcription command arguments to compare
+   MLX and whisper.cpp outputs before correcting the note copy.
+8. Choose a descriptive note title from the content.
+9. Run `note` with date, source, backend, model, and raw JSON provenance.
+10. If warnings or review uncertainties remain, report them explicitly.
 
 ## Commands
 
@@ -157,6 +174,7 @@ transcribe-audio note ./transcripts/audio.txt \
 | `transcribe` | Transcribe one audio file |
 | `batch` | Transcribe multiple files into a run directory |
 | `quality` | Flag common hallucination and repetition markers |
+| `review` | Find uncertain timestamp windows and optionally extract clips |
 | `combine` | Combine transcript text files into Markdown |
 | `note` | Write a vault-ready Markdown transcript note |
 

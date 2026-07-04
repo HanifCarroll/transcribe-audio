@@ -242,6 +242,28 @@ def build_parser() -> argparse.ArgumentParser:
     quality.add_argument("--json", action="store_true")
     quality.set_defaults(func=cmd_quality)
 
+    review = subparsers.add_parser(
+        "review",
+        help="Find timestamped transcript review windows and optionally extract clips.",
+    )
+    review.add_argument("transcript_json", type=pathlib.Path)
+    review.add_argument("--audio", type=pathlib.Path)
+    review.add_argument(
+        "--phrase",
+        dest="phrases",
+        action="append",
+        default=[],
+        help="Phrase to locate in the transcript; can be repeated.",
+    )
+    review.add_argument("--min-word-probability", type=float, default=0.35)
+    review.add_argument("--context", type=float, default=2.0)
+    review.add_argument("--merge-gap", type=float, default=1.0)
+    review.add_argument("--max-windows", type=int, default=12)
+    review.add_argument("--output-dir", type=pathlib.Path)
+    review.add_argument("--extract-clips", action="store_true")
+    review.add_argument("--json", action="store_true")
+    review.set_defaults(func=cmd_review)
+
     combine = subparsers.add_parser("combine", help="Combine transcript text into Markdown.")
     combine.add_argument("inputs", nargs="+", type=pathlib.Path)
     combine.add_argument("--output", type=pathlib.Path, default=pathlib.Path("transcripts.md"))
@@ -302,6 +324,7 @@ def normalize_argv(argv: list[str]) -> list[str]:
         "batch",
         "discover",
         "quality",
+        "review",
         "combine",
         "note",
     }
@@ -506,6 +529,59 @@ def cmd_quality(args: argparse.Namespace) -> None:
             print(f"- {warning['code']}: {warning['message']}")
     else:
         print("No transcript quality warnings.")
+
+
+def cmd_review(args: argparse.Namespace) -> None:
+    transcript_json = expand_path(args.transcript_json)
+    data = read_json_file(transcript_json, stage="review")
+    windows = build_review_windows(
+        data,
+        phrases=args.phrases,
+        min_word_probability=args.min_word_probability,
+        context_seconds=args.context,
+        merge_gap_seconds=args.merge_gap,
+        max_windows=args.max_windows,
+    )
+    audio = expand_path(args.audio) if args.audio else None
+    output_dir = expand_path(args.output_dir) if args.output_dir else transcript_json.with_name(f"{transcript_json.stem}-review")
+    if args.extract_clips:
+        if audio is None:
+            raise ToolError("review", "--extract-clips requires --audio")
+        if not audio.exists():
+            raise ToolError("review", f"audio file does not exist: {audio}")
+        env = env_paths()
+        if env.ffmpeg is None:
+            raise ToolError("doctor", "ffmpeg is required to extract review clips")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for index, window in enumerate(windows, start=1):
+            label = review_window_label(index, window)
+            clip = output_dir / f"{label}.wav"
+            extract_audio_clip(env, audio, clip, window["start"], window["end"])
+            window["clip"] = str(clip)
+            window["transcribe_commands"] = review_transcribe_commands(clip, output_dir, label)
+    elif args.output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "ok": True,
+        "transcript_json": str(transcript_json),
+        "audio": str(audio) if audio else None,
+        "output_dir": str(output_dir) if args.extract_clips or args.output_dir else None,
+        "window_count": len(windows),
+        "windows": windows,
+    }
+    if args.json:
+        print_json(payload)
+        return
+    if not windows:
+        print("No review windows found.")
+        return
+    for window in windows:
+        print(f"{window['id']}: {window['start']:.2f}-{window['end']:.2f}s")
+        print(f"  reasons: {', '.join(reason['code'] for reason in window['reasons'])}")
+        print(f"  text: {window['text']}")
+        if "clip" in window:
+            print(f"  clip: {window['clip']}")
 
 
 def cmd_combine(args: argparse.Namespace) -> None:
@@ -1130,6 +1206,249 @@ def discover_audio(root: pathlib.Path, *, recursive: bool, min_mtime: float | No
             }
         )
     return rows
+
+
+def read_json_file(path: pathlib.Path, *, stage: str) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except OSError as err:
+        raise ToolError(stage, f"failed to read JSON {path}: {err}") from err
+    except json.JSONDecodeError as err:
+        raise ToolError(stage, f"failed to parse JSON {path}: {err}") from err
+
+
+def build_review_windows(
+    data: dict[str, Any],
+    *,
+    phrases: list[str],
+    min_word_probability: float,
+    context_seconds: float,
+    merge_gap_seconds: float,
+    max_windows: int,
+) -> list[dict[str, Any]]:
+    segments = transcript_segments(data)
+    raw_windows: list[dict[str, Any]] = []
+    normalized_phrases = [normalize_spaces(phrase).lower() for phrase in phrases if normalize_spaces(phrase)]
+    for segment in segments:
+        text = segment["text"]
+        lower_text = normalize_spaces(text).lower()
+        for phrase in normalized_phrases:
+            if phrase in lower_text:
+                raw_windows.append(
+                    review_window(
+                        segment["start"],
+                        segment["end"],
+                        context_seconds,
+                        text,
+                        {
+                            "code": "phrase",
+                            "phrase": phrase,
+                        },
+                        priority=0,
+                    )
+                )
+        low_words = [
+            word
+            for word in segment.get("words", [])
+            if word.get("probability") is not None
+            and float(word["probability"]) < min_word_probability
+            and word.get("start") is not None
+            and word.get("end") is not None
+        ]
+        if low_words:
+            raw_windows.append(
+                review_window(
+                    min(float(word["start"]) for word in low_words),
+                    max(float(word["end"]) for word in low_words),
+                    context_seconds,
+                    text,
+                    {
+                        "code": "low-word-probability",
+                        "threshold": min_word_probability,
+                        "count": len(low_words),
+                        "min_probability": round(min(float(word["probability"]) for word in low_words), 4),
+                        "words": [
+                            {
+                                "word": normalize_spaces(str(word.get("word", ""))),
+                                "probability": round(float(word["probability"]), 4),
+                            }
+                            for word in low_words[:12]
+                        ],
+                    },
+                    priority=1,
+                )
+            )
+    merged = merge_review_windows(raw_windows, merge_gap_seconds=merge_gap_seconds)
+    selected = sorted(merged, key=lambda row: (row["_priority"], row["start"], row["end"]))[: max(max_windows, 0)]
+    selected.sort(key=lambda row: (row["start"], row["end"]))
+    for index, window in enumerate(selected, start=1):
+        window["id"] = f"review-{index:03d}"
+        window["duration_seconds"] = round(window["end"] - window["start"], 3)
+        window.pop("_priority", None)
+    return selected
+
+
+def transcript_segments(data: dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(data.get("segments"), list):
+        rows = []
+        for segment in data["segments"]:
+            if "start" not in segment or "end" not in segment:
+                continue
+            rows.append(
+                {
+                    "start": float(segment["start"]),
+                    "end": float(segment["end"]),
+                    "text": normalize_spaces(str(segment.get("text", ""))),
+                    "words": segment.get("words", []),
+                }
+            )
+        if rows:
+            return rows
+    if isinstance(data.get("transcription"), list):
+        rows = []
+        for segment in data["transcription"]:
+            offsets = segment.get("offsets", {})
+            if "from" not in offsets or "to" not in offsets:
+                continue
+            rows.append(
+                {
+                    "start": float(offsets["from"]) / 1000.0,
+                    "end": float(offsets["to"]) / 1000.0,
+                    "text": normalize_spaces(str(segment.get("text", ""))),
+                    "words": [],
+                }
+            )
+        if rows:
+            return rows
+    raise ToolError("review", "transcript JSON does not contain timestamped segments")
+
+
+def review_window(
+    start: float,
+    end: float,
+    context_seconds: float,
+    text: str,
+    reason: dict[str, Any],
+    *,
+    priority: int,
+) -> dict[str, Any]:
+    window_start = max(0.0, start - max(context_seconds, 0.0))
+    window_end = max(window_start, end + max(context_seconds, 0.0))
+    return {
+        "start": round(window_start, 3),
+        "end": round(window_end, 3),
+        "text": normalize_spaces(text),
+        "reasons": [reason],
+        "_priority": priority,
+    }
+
+
+def merge_review_windows(windows: list[dict[str, Any]], *, merge_gap_seconds: float) -> list[dict[str, Any]]:
+    if not windows:
+        return []
+    ordered = sorted(windows, key=lambda row: (row["start"], row["end"]))
+    merged: list[dict[str, Any]] = [ordered[0]]
+    for window in ordered[1:]:
+        current = merged[-1]
+        if window["start"] <= current["end"] + max(merge_gap_seconds, 0.0):
+            current["end"] = max(current["end"], window["end"])
+            current["text"] = join_unique_text(current["text"], window["text"])
+            current["reasons"].extend(window["reasons"])
+            current["_priority"] = min(current["_priority"], window["_priority"])
+            continue
+        merged.append(window)
+    return merged
+
+
+def join_unique_text(left: str, right: str) -> str:
+    left = normalize_spaces(left)
+    right = normalize_spaces(right)
+    if not left:
+        return right
+    if not right or right in left:
+        return left
+    if left in right:
+        return right
+    return f"{left} {right}"
+
+
+def review_window_label(index: int, window: dict[str, Any]) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", window.get("text", ""))
+    suffix = slugify(" ".join(words[:6])) if words else "clip"
+    return f"{index:03d}-{suffix}"
+
+
+def extract_audio_clip(env: EnvPaths, audio: pathlib.Path, output: pathlib.Path, start: float, end: float) -> None:
+    duration = max(end - start, 0.1)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            str(env.ffmpeg),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            f"{start:.3f}",
+            "-t",
+            f"{duration:.3f}",
+            "-i",
+            str(audio),
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            str(output),
+        ],
+        "review",
+    )
+
+
+def review_transcribe_commands(clip: pathlib.Path, output_dir: pathlib.Path, label: str) -> dict[str, list[str]]:
+    return {
+        "whisper_cpp_large_v3": [
+            "transcribe-audio",
+            "transcribe",
+            str(clip),
+            "--backend",
+            "whisper-cpp",
+            "--model",
+            "large-v3",
+            "--language",
+            "en",
+            "--formats",
+            "txt,json",
+            "--output-dir",
+            str(output_dir),
+            "--output-name",
+            f"{label}-cpp-large-v3",
+            "--json",
+        ],
+        "mlx_large_v3": [
+            "transcribe-audio",
+            "transcribe",
+            str(clip),
+            "--backend",
+            "mlx",
+            "--model",
+            "large-v3",
+            "--language",
+            "en",
+            "--formats",
+            "txt,json",
+            "--output-dir",
+            str(output_dir),
+            "--output-name",
+            f"{label}-mlx-large-v3",
+            "--json",
+        ],
+    }
+
+
+def normalize_spaces(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def collect_transcript_inputs(inputs: list[pathlib.Path]) -> list[tuple[str, pathlib.Path]]:
