@@ -4,10 +4,11 @@ Local-first audio transcription workbench for coding agents and personal
 automation.
 
 `transcribe-audio` is a Python CLI for turning local recordings into inspectable
-transcript artifacts. It uses [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)
-by default on Apple Silicon, keeps `txt` and `json` outputs for agent review, and
-includes helpers for silence preprocessing, transcript quality checks, batch
-runs, timestamped review clips, and Obsidian-friendly Markdown notes.
+transcript artifacts. It supports [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper),
+Spokenly's local Parakeet TDT file transcription, and whisper.cpp. It keeps
+`txt` and `json` outputs for agent review and includes helpers for silence
+preprocessing, transcript quality checks, batch runs, timestamped review clips,
+and Obsidian-friendly Markdown notes.
 
 The tool is intentionally a workbench instead of a fully automatic note taker:
 it handles repeatable audio plumbing while leaving judgment about prompts,
@@ -32,11 +33,12 @@ transcripts, generated artifacts, and model files out of git.
 ## Features
 
 - MLX Whisper `large-v3` default for high-quality Apple Silicon transcription
+- Optional Spokenly NVIDIA Parakeet TDT 0.6B V3 backend for fast local English transcription
 - Optional whisper.cpp fallback for comparison and subtitle formats
 - Audio normalization through `ffmpeg`
 - Silence-removal preprocessing for recordings with long dead air
 - JSON summaries designed for automation and coding agents
-- Batch transcription with a run manifest
+- Batch transcription with a run manifest and optional parallel workers
 - Lightweight quality warnings for common silence hallucination markers
 - Timestamped review windows and clip extraction for uncertain transcript text
 - Markdown note writer with date, source, backend, model, and raw artifact
@@ -48,6 +50,7 @@ transcripts, generated artifacts, and model files out of git.
 - [`uv`](https://docs.astral.sh/uv/)
 - [`ffmpeg`](https://ffmpeg.org/)
 - Apple Silicon for the default MLX backend
+- Optional: [Spokenly](https://spokenly.app/) with NVIDIA Parakeet TDT 0.6B V3 selected for file transcription and its local MCP bridge enabled
 - Optional: `whisper-cli` from [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
   for fallback comparisons, SRT, and VTT output
 
@@ -125,6 +128,19 @@ transcribe-audio "/path/to/audio.m4a" \
   --json
 ```
 
+Use Spokenly's Parakeet TDT backend when the app, model, and local MCP bridge are available:
+
+```sh
+transcribe-audio doctor --backend spokenly --json
+transcribe-audio transcribe "/path/to/audio.m4a" \
+  --backend spokenly \
+  --model parakeetTDT06 \
+  --formats txt,json \
+  --json
+```
+
+Parakeet TDT supports English `txt,json` output and does not accept transcription prompts. The command fails if Spokenly reports a different selected file model.
+
 Preprocess long silence before retrying:
 
 ```sh
@@ -135,6 +151,15 @@ Check a transcript for common hallucination markers:
 
 ```sh
 transcribe-audio quality ./transcripts/audio.txt --json
+```
+
+Transcribe several independent files at once:
+
+```sh
+transcribe-audio batch "/path/one.m4a" "/path/two.m4a" \
+  --output-dir ./transcripts/current \
+  --jobs 2 \
+  --json
 ```
 
 Build review windows for low-confidence words or suspect phrases, then extract
@@ -168,15 +193,17 @@ transcribe-audio note ./transcripts/audio.txt \
 2. Use `discover` if the user points at a folder or vague location.
 3. Use `preprocess` when long silence is likely or quality warnings appear.
 4. Run `transcribe` with the MLX default and keep `txt,json` artifacts.
-5. Run `quality` on the text transcript.
-6. Run `review` on raw JSON when text looks garbled or names/tools are
+5. For multiple independent files, use `batch --jobs 2` to parallelize raw
+   transcription only.
+6. Run `quality` on the text transcript.
+7. Run `review` on raw JSON when text looks garbled or names/tools are
    uncertain. Use the same audio file that was transcribed, such as the
    preprocessed/desilenced file when one was used.
-7. Use extracted clips and emitted re-transcription command arguments to compare
+8. Use extracted clips and emitted re-transcription command arguments to compare
    MLX and whisper.cpp outputs before correcting the note copy.
-8. Choose a descriptive note title from the content.
-9. Run `note` with date, source, backend, model, and raw JSON provenance.
-10. If warnings or review uncertainties remain, report them explicitly.
+9. Choose a descriptive note title from the content.
+10. Run `note` with date, source, backend, model, and raw JSON provenance.
+11. If warnings or review uncertainties remain, report them explicitly.
 
 ## Agent Skill
 
@@ -187,20 +214,22 @@ skills/transcribe-audio-to-vault/SKILL.md
 ```
 
 The skill gives agents a repeatable workflow for using this CLI to turn audio
-files into reviewed, sourced Markdown notes. It assumes `transcribe-audio` is
-installed on `PATH` or can be run from a checkout with `uv run`.
+files into reviewed, sourced Markdown notes. Hanif's checked-in workflow selects
+Spokenly Parakeet TDT explicitly and keeps MLX `large-v3` as a quality or
+availability fallback. It assumes `transcribe-audio` is installed on `PATH` or
+can be run from a checkout with `uv run`.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
 | `doctor` | Check required tools and installed models |
-| `models` | List known MLX and whisper.cpp models |
+| `models` | List known Spokenly, MLX, and whisper.cpp models |
 | `download-model` | Download/cache a known model |
 | `discover` | Find recent audio files in a folder |
 | `preprocess` | Remove long silence from an audio file |
 | `transcribe` | Transcribe one audio file |
-| `batch` | Transcribe multiple files into a run directory |
+| `batch` | Transcribe multiple files into a run directory; use `--jobs N` for parallel raw transcription |
 | `quality` | Flag common hallucination and repetition markers |
 | `review` | Find uncertain timestamp windows and optionally extract clips |
 | `combine` | Combine transcript text files into Markdown |
@@ -212,7 +241,7 @@ Examples:
 transcribe-audio models --json
 transcribe-audio discover ~/Downloads --since 2d --json
 transcribe-audio transcribe "/path/to/audio.m4a" --formats txt,json --json
-transcribe-audio batch "/path/one.m4a" "/path/two.m4a" --output-dir ./transcripts/current --json
+transcribe-audio batch "/path/one.m4a" "/path/two.m4a" --output-dir ./transcripts/current --jobs 2 --json
 transcribe-audio combine ./transcripts/current --output ./transcripts/current/transcripts.md
 ```
 
@@ -231,7 +260,7 @@ transcribe-audio transcribe "/path/to/audio.m4a" \
 
 Transcripts, audio files, converted WAVs, and run artifacts are ignored by git.
 The CLI does not send audio to hosted transcription APIs; transcription runs
-locally through MLX Whisper or whisper.cpp.
+locally through MLX Whisper, Spokenly's on-device model bridge, or whisper.cpp.
 
 JSON mode returns structured failures:
 
