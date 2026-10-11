@@ -27,7 +27,12 @@ DEFAULT_SPOKENLY_MCP_URL = "http://127.0.0.1:51089"
 DEFAULT_SPOKENLY_TDT_MODEL_DIR = (
     "~/Library/Application Support/FluidAudio/Models/parakeet-tdt-0.6b-v3"
 )
+SPOKENLY_APPLE_SPEECH_MODEL_ID = "apple-speech-analyzer"
 SPOKENLY_TDT_MODEL_ID = "parakeetTDT06"
+SPOKENLY_MODEL_IDS = {
+    SPOKENLY_APPLE_SPEECH_MODEL_ID,
+    SPOKENLY_TDT_MODEL_ID,
+}
 DEFAULT_MLX_PYTHON = "3.11"
 SUPPORTED_FORMATS = {"txt", "json", "srt", "vtt"}
 MLX_SUPPORTED_FORMATS = {"txt", "json"}
@@ -37,12 +42,19 @@ SUPPORTED_AUDIO_EXTENSIONS = {"aac", "flac", "m4a", "mp3", "ogg", "opus", "wav",
 SPOKENLY_MODELS = OrderedDict(
     [
         (
+            "apple-speech-analyzer",
+            {
+                "id": SPOKENLY_APPLE_SPEECH_MODEL_ID,
+                "note": "Default Spokenly file transcription through Apple Speech Analyzer.",
+            },
+        ),
+        (
             "parakeet-tdt-0.6b-v3",
             {
                 "id": SPOKENLY_TDT_MODEL_ID,
                 "note": "Fast English file transcription through Spokenly's local MCP bridge.",
             },
-        )
+        ),
     ]
 )
 
@@ -353,7 +365,7 @@ def add_backend_arg(parser: argparse.ArgumentParser) -> None:
         "--backend",
         default="mlx",
         choices=backend_choices(),
-        help="Transcription backend. Defaults to MLX; use spokenly for Parakeet TDT.",
+        help="Transcription backend. Defaults to MLX; Spokenly supports Apple Speech Analyzer and Parakeet TDT.",
     )
 
 
@@ -462,7 +474,7 @@ def cmd_models(args: argparse.Namespace) -> None:
     if backend:
         rows = [row for row in rows if row["backend"] == backend]
     recommended = (
-        f"spokenly:{SPOKENLY_TDT_MODEL_ID}"
+        f"spokenly:{SPOKENLY_APPLE_SPEECH_MODEL_ID}"
         if backend == "spokenly"
         else "mlx-whisper:large-v3"
     )
@@ -823,7 +835,7 @@ def transcribe_one(
 ) -> dict[str, Any]:
     env = env_paths()
     backend = normalize_backend(args.backend)
-    ensure_tools(env, backend)
+    ensure_tools(env, backend, args.model)
     input_path = expand_path(input_path)
     if not input_path.exists():
         raise ToolError("input", f"input file does not exist: {input_path}")
@@ -1148,8 +1160,8 @@ def run_spokenly(
         raise ToolError(
             "model",
             "Spokenly returned model "
-            f"{reported_model or 'unknown'}; select NVIDIA Parakeet TDT 0.6B V3 "
-            f"({model.locator}) for file transcription and retry.",
+            f"{reported_model or 'unknown'}; select {model.locator} "
+            "for file transcription and retry.",
         )
     text = spokenly_transcript_text(transcript)
     if "txt" in formats:
@@ -1295,23 +1307,36 @@ def choose_model(model_arg: str, backend: str, env: EnvPaths) -> SelectedModel:
 
 
 def choose_spokenly_model(model_arg: str, env: EnvPaths) -> SelectedModel:
-    aliases = {
+    apple_aliases = {
         "auto",
+        "apple",
+        "apple-speech",
+        "apple-speech-analyzer",
+        SPOKENLY_APPLE_SPEECH_MODEL_ID,
+    }
+    parakeet_aliases = {
         "parakeet",
         "parakeet-tdt",
         "parakeet-tdt-0.6b-v3",
         SPOKENLY_TDT_MODEL_ID,
     }
-    if model_arg not in aliases:
-        raise ToolError(
-            "model",
-            "Spokenly backend supports only NVIDIA Parakeet TDT 0.6B V3 "
-            f"({SPOKENLY_TDT_MODEL_ID}); got {model_arg}.",
+    if model_arg in apple_aliases:
+        return SelectedModel(
+            name="apple-speech-analyzer",
+            locator=SPOKENLY_APPLE_SPEECH_MODEL_ID,
+            path=env.spokenly_app,
         )
-    return SelectedModel(
-        name="parakeet-tdt-0.6b-v3",
-        locator=SPOKENLY_TDT_MODEL_ID,
-        path=env.spokenly_tdt_model_dir,
+    if model_arg in parakeet_aliases:
+        return SelectedModel(
+            name="parakeet-tdt-0.6b-v3",
+            locator=SPOKENLY_TDT_MODEL_ID,
+            path=env.spokenly_tdt_model_dir,
+        )
+    raise ToolError(
+        "model",
+        "Spokenly backend supports Apple Speech Analyzer "
+        f"({SPOKENLY_APPLE_SPEECH_MODEL_ID}) or NVIDIA Parakeet TDT 0.6B V3 "
+        f"({SPOKENLY_TDT_MODEL_ID}); got {model_arg}.",
     )
 
 
@@ -1423,7 +1448,9 @@ def env_tool(env_name: str, command: str) -> pathlib.Path | None:
     return pathlib.Path(found) if found else None
 
 
-def ensure_tools(env: EnvPaths, backend: str) -> None:
+def ensure_tools(
+    env: EnvPaths, backend: str, model_arg: str | None = None
+) -> None:
     missing = []
     if env.ffmpeg is None:
         missing.append("ffmpeg")
@@ -1434,17 +1461,32 @@ def ensure_tools(env: EnvPaths, backend: str) -> None:
     if backend == "spokenly":
         if not env.spokenly_app.exists():
             missing.append("Spokenly.app")
-        if not env.spokenly_tdt_model_dir.exists():
-            missing.append("NVIDIA Parakeet TDT 0.6B V3 in Spokenly")
         bridge_available, _ = spokenly_bridge_status(env)
         if not bridge_available:
             missing.append("Spokenly local MCP bridge")
         selected_model = spokenly_selected_file_model_id()
-        if selected_model != SPOKENLY_TDT_MODEL_ID:
+        if model_arg is not None:
+            requested = choose_spokenly_model(model_arg, env)
+            if selected_model != requested.locator:
+                missing.append(
+                    f"{requested.locator} selected for Spokenly file transcription "
+                    f"(found {selected_model or 'unknown'})"
+                )
+            if (
+                requested.locator == SPOKENLY_TDT_MODEL_ID
+                and not env.spokenly_tdt_model_dir.exists()
+            ):
+                missing.append("NVIDIA Parakeet TDT 0.6B V3 in Spokenly")
+        elif selected_model not in SPOKENLY_MODEL_IDS:
             missing.append(
-                "NVIDIA Parakeet TDT 0.6B V3 selected for Spokenly file transcription "
-                f"(found {selected_model or 'unknown'})"
+                "Apple Speech Analyzer or NVIDIA Parakeet TDT 0.6B V3 selected "
+                f"for Spokenly file transcription (found {selected_model or 'unknown'})"
             )
+        elif (
+            selected_model == SPOKENLY_TDT_MODEL_ID
+            and not env.spokenly_tdt_model_dir.exists()
+        ):
+            missing.append("NVIDIA Parakeet TDT 0.6B V3 in Spokenly")
     if missing:
         raise ToolError("doctor", f"missing required tool(s): {', '.join(missing)}")
 
@@ -1485,12 +1527,15 @@ def backend_ready(
     if env.ffmpeg is None:
         return False
     if backend == "spokenly":
-        return (
+        if not (
             env.spokenly_app.exists()
-            and env.spokenly_tdt_model_dir.exists()
             and spokenly_bridge_available
-            and spokenly_selected_model == SPOKENLY_TDT_MODEL_ID
-        )
+            and spokenly_selected_model in SPOKENLY_MODEL_IDS
+        ):
+            return False
+        if spokenly_selected_model == SPOKENLY_TDT_MODEL_ID:
+            return env.spokenly_tdt_model_dir.exists()
+        return True
     if backend == "mlx-whisper":
         return mlx_runner_available(env)
     return env.whisper_cli is not None
@@ -1562,6 +1607,16 @@ def mlx_python_command(env: EnvPaths) -> list[str]:
 
 def installed_models(env: EnvPaths) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    rows.append(
+        {
+            "backend": "spokenly",
+            "name": "apple-speech-analyzer",
+            "file": SPOKENLY_APPLE_SPEECH_MODEL_ID,
+            "installed": env.spokenly_app.exists(),
+            "paths": [str(env.spokenly_app)] if env.spokenly_app.exists() else [],
+            "note": SPOKENLY_MODELS["apple-speech-analyzer"]["note"],
+        }
+    )
     rows.append(
         {
             "backend": "spokenly",
@@ -1987,6 +2042,24 @@ def review_transcribe_commands(
     clip: pathlib.Path, output_dir: pathlib.Path, label: str
 ) -> dict[str, list[str]]:
     return {
+        "apple_speech_analyzer": [
+            "transcribe-audio",
+            "transcribe",
+            str(clip),
+            "--backend",
+            "spokenly",
+            "--model",
+            SPOKENLY_APPLE_SPEECH_MODEL_ID,
+            "--language",
+            "en",
+            "--formats",
+            "txt,json",
+            "--output-dir",
+            str(output_dir),
+            "--output-name",
+            f"{label}-apple-speech-analyzer",
+            "--json",
+        ],
         "parakeet_tdt": [
             "transcribe-audio",
             "transcribe",

@@ -23,12 +23,12 @@ VOICE_MEMOS_DB = "CloudRecordings.db"
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="walky_talky_ledger.py",
-        description="Track imported walky-talky voice notes for transcribe-audio-to-vault.",
+        description="Track completed voice-note imports and preserve their sources.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     scan = subparsers.add_parser(
-        "scan", help="Find new walky-talky audio since the latest ledger source time."
+        "scan", help="Find audio not yet recorded in the import ledger."
     )
     add_common_args(scan)
     scan.add_argument("--json", action="store_true")
@@ -91,7 +91,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         "--root",
         action="append",
         dest="roots",
-        help="Audio root to scan. Can be repeated. Defaults to Voice Memos plus sources/walky-talky/inbox.",
+        help="Audio root to scan. Can be repeated. Defaults to Apple Voice Memos.",
     )
 
 
@@ -116,9 +116,6 @@ def cmd_scan(args: argparse.Namespace) -> dict[str, Any]:
                 skipped_deleted_count += 1
                 continue
             identity = source_identity(path)
-            source_time = identity["source_unix_seconds"]
-            if latest_source_time is not None and source_time <= latest_source_time:
-                continue
             if identity["sha256"] in imported_hashes:
                 continue
             candidates.append(identity)
@@ -141,7 +138,9 @@ def cmd_scan(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_append(args: argparse.Namespace) -> dict[str, Any]:
     vault = expand_path(args.vault)
     ledger_path = resolve_ledger(vault, args.ledger)
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    for field in (args.note, args.txt, args.json_artifact):
+        if not expand_path(field).is_file():
+            raise FileNotFoundError(f"import artifact does not exist: {field}")
     existing = read_ledger(ledger_path, scope=args.scope)
     identity = source_identity(expand_path(args.source))
     duplicate = next(
@@ -170,6 +169,7 @@ def cmd_append(args: argparse.Namespace) -> dict[str, Any]:
         "backend": args.backend,
         "model": args.model,
     }
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
     with ledger_path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
     return {
@@ -188,8 +188,11 @@ def cmd_cleanup_audio(args: argparse.Namespace) -> dict[str, Any]:
 
     if not run_dir.is_dir():
         raise FileNotFoundError(f"run directory does not exist: {run_dir}")
-    if not is_relative_to(run_dir, raw_root):
+    if run_dir == raw_root or not is_relative_to(run_dir, raw_root):
         raise ValueError(f"run directory must be inside {raw_root}: {run_dir}")
+
+    if not source.is_file():
+        raise FileNotFoundError(f"source does not exist: {source}")
 
     removed_count = 0
     removed_bytes = 0
@@ -217,10 +220,7 @@ def cmd_cleanup_audio(args: argparse.Namespace) -> dict[str, Any]:
 def scan_roots(vault: pathlib.Path, roots: list[str] | None) -> list[pathlib.Path]:
     if roots:
         return [expand_path(root) for root in roots]
-    return [
-        expand_path(VOICE_MEMOS_ROOT),
-        vault / "sources" / DEFAULT_SCOPE / "inbox",
-    ]
+    return [expand_path(VOICE_MEMOS_ROOT)]
 
 
 def audio_files(root: pathlib.Path) -> list[pathlib.Path]:
@@ -248,9 +248,6 @@ def deleted_voice_memo_paths(
     roots: list[pathlib.Path],
     explicit_roots: list[str] | None,
 ) -> tuple[set[pathlib.Path], list[str]]:
-    if explicit_roots:
-        return set(), []
-
     voice_memos_root = expand_path(VOICE_MEMOS_ROOT)
     if not any(root.resolve() == voice_memos_root for root in roots):
         return set(), []

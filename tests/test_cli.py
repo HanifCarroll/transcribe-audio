@@ -4,6 +4,8 @@ import json
 import pathlib
 import tempfile
 import unittest
+from unittest.mock import patch
+from dataclasses import replace
 
 from transcribe_audio import cli
 
@@ -43,8 +45,27 @@ class CliHelpersTest(unittest.TestCase):
 
         selected = cli.choose_spokenly_model("auto", cli.env_paths())
 
-        self.assertEqual(selected.name, "parakeet-tdt-0.6b-v3")
-        self.assertEqual(selected.locator, "parakeetTDT06")
+        self.assertEqual(selected.name, "apple-speech-analyzer")
+        self.assertEqual(selected.locator, "apple-speech-analyzer")
+        parakeet = cli.choose_spokenly_model("parakeetTDT06", cli.env_paths())
+        self.assertEqual(parakeet.locator, "parakeetTDT06")
+
+    def test_spokenly_auto_checks_the_requested_default_before_transcription(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = pathlib.Path(tmp) / "Spokenly.app"
+            app.mkdir()
+            env = replace(cli.env_paths(), spokenly_app=app, ffmpeg=pathlib.Path("/fake/ffmpeg"))
+            with patch.object(cli, "spokenly_bridge_status", return_value=(True, None)), patch.object(
+                cli, "spokenly_selected_file_model_id", return_value=cli.SPOKENLY_TDT_MODEL_ID
+            ):
+                with self.assertRaisesRegex(cli.ToolError, "apple-speech-analyzer selected"):
+                    cli.ensure_tools(env, "spokenly", "auto")
+            with patch.object(cli, "spokenly_bridge_status", return_value=(True, None)), patch.object(
+                cli, "spokenly_selected_file_model_id", return_value=cli.SPOKENLY_APPLE_SPEECH_MODEL_ID
+            ):
+                cli.ensure_tools(env, "spokenly", "auto")
+                with self.assertRaisesRegex(cli.ToolError, "parakeetTDT06 selected"):
+                    cli.ensure_tools(env, "spokenly", "parakeetTDT06")
 
     def test_spokenly_model_preference_requires_json_string(self) -> None:
         self.assertEqual(
@@ -83,6 +104,25 @@ class CliHelpersTest(unittest.TestCase):
         self.assertEqual(transcript["modelId"], "parakeetTDT06")
         self.assertEqual(cli.spokenly_transcript_text(transcript), "Hello world.")
 
+    def test_spokenly_writes_only_the_requested_model_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for model_id in (cli.SPOKENLY_APPLE_SPEECH_MODEL_ID, cli.SPOKENLY_TDT_MODEL_ID):
+                model = cli.choose_spokenly_model(model_id, cli.env_paths())
+                response = {"result": {"content": [{"type": "text", "text": json.dumps({
+                    "modelId": model_id, "segments": [{"start": 0, "end": 1, "text": "Hello."}]
+                })}]}}
+                with patch.object(cli, "spokenly_rpc", return_value=response):
+                    output = root / model_id
+                    cli.run_spokenly(cli.env_paths(), root / "source.wav", output, model, ["txt", "json"])
+                    self.assertEqual(output.with_suffix(".txt").read_text(), "Hello.\n")
+                    wrong = cli.choose_spokenly_model(
+                        cli.SPOKENLY_TDT_MODEL_ID if model_id == cli.SPOKENLY_APPLE_SPEECH_MODEL_ID
+                        else cli.SPOKENLY_APPLE_SPEECH_MODEL_ID, cli.env_paths())
+                    with self.assertRaisesRegex(cli.ToolError, "Spokenly returned model"):
+                        cli.run_spokenly(cli.env_paths(), root / "source.wav", root / "mismatch", wrong, ["txt", "json"])
+                    self.assertFalse((root / "mismatch.txt").exists())
+
     def test_spokenly_rejects_prompts_and_subtitle_formats(self) -> None:
         with self.assertRaises(cli.ToolError):
             cli.validate_spokenly_options("en", "Names: Codex")
@@ -97,17 +137,19 @@ class CliHelpersTest(unittest.TestCase):
         with self.assertRaisesRegex(cli.ToolError, "Spokenly's model manager"):
             cli.cmd_download_model(args)
 
-    def test_review_commands_use_parakeet_tdt_as_primary(self) -> None:
+    def test_review_commands_use_apple_speech_analyzer_as_primary(self) -> None:
         commands = cli.review_transcribe_commands(
             pathlib.Path("/tmp/clip.wav"),
             pathlib.Path("/tmp/review"),
             "clip",
         )
 
-        self.assertIn("parakeet_tdt", commands)
+        self.assertIn("apple_speech_analyzer", commands)
         self.assertEqual(
-            commands["parakeet_tdt"][commands["parakeet_tdt"].index("--model") + 1],
-            "parakeetTDT06",
+            commands["apple_speech_analyzer"][
+                commands["apple_speech_analyzer"].index("--model") + 1
+            ],
+            "apple-speech-analyzer",
         )
 
     def test_unique_output_name_reserves_duplicate_batch_stems(self) -> None:

@@ -15,6 +15,7 @@ classifiers = [
 
 [project.scripts]
 transcribe-audio = "transcribe_audio.cli:main"
+walky-talky-ledger = "transcribe_audio.walky_talky_ledger:main"
 
 [build-system]
 requires = ["hatchling"]

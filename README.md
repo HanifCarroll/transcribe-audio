@@ -5,7 +5,7 @@ automation.
 
 `transcribe-audio` is a Python CLI for turning local recordings into inspectable
 transcript artifacts. It supports [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper),
-Spokenly's local Parakeet TDT file transcription, and whisper.cpp. It keeps
+Spokenly's on-device Apple Speech Analyzer and Parakeet TDT file transcription, and whisper.cpp. It keeps
 `txt` and `json` outputs for agent review and includes helpers for silence
 preprocessing, transcript quality checks, batch runs, timestamped review clips,
 and Obsidian-friendly Markdown notes.
@@ -23,17 +23,16 @@ Set up this local transcription workbench for me:
 https://github.com/HanifCarroll/transcribe-audio
 
 Clone the repo if needed, install the Python CLI with uv, run the doctor check,
-download the default MLX large-v3 model, and verify that `transcribe-audio
-doctor --json` works. If your environment supports skills, install or adapt the
-public skill at `skills/transcribe-audio-to-vault/SKILL.md` so future agents can
-use the CLI to turn audio files into sourced Markdown notes. Keep audio files,
-transcripts, generated artifacts, and model files out of git.
+select the backend for the task, and verify its doctor check. Download large-v3
+only when using MLX. Use the repository README and CLI help as the operating
+contract. Keep audio files, transcripts, generated artifacts, and model files
+out of git.
 ```
 
 ## Features
 
 - MLX Whisper `large-v3` default for high-quality Apple Silicon transcription
-- Optional Spokenly NVIDIA Parakeet TDT 0.6B V3 backend for fast local English transcription
+- Optional Spokenly backend with Apple Speech Analyzer or NVIDIA Parakeet TDT 0.6B V3 for local English transcription
 - Optional whisper.cpp fallback for comparison and subtitle formats
 - Audio normalization through `ffmpeg`
 - Silence-removal preprocessing for recordings with long dead air
@@ -50,7 +49,7 @@ transcripts, generated artifacts, and model files out of git.
 - [`uv`](https://docs.astral.sh/uv/)
 - [`ffmpeg`](https://ffmpeg.org/)
 - Apple Silicon for the default MLX backend
-- Optional: [Spokenly](https://spokenly.app/) with NVIDIA Parakeet TDT 0.6B V3 selected for file transcription and its local MCP bridge enabled
+- Optional: [Spokenly](https://spokenly.app/) with the requested Apple Speech Analyzer or Parakeet TDT file model selected and its local MCP bridge enabled
 - Optional: `whisper-cli` from [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
   for fallback comparisons, SRT, and VTT output
 
@@ -76,7 +75,7 @@ transcribe-audio doctor --json
 
 ## Defaults
 
-Default backend:
+CLI default backend:
 
 ```text
 mlx-whisper
@@ -128,18 +127,18 @@ transcribe-audio "/path/to/audio.m4a" \
   --json
 ```
 
-Use Spokenly's Parakeet TDT backend when the app, model, and local MCP bridge are available:
+Use Spokenly's Apple Speech Analyzer backend when the app and local MCP bridge are available:
 
 ```sh
 transcribe-audio doctor --backend spokenly --json
 transcribe-audio transcribe "/path/to/audio.m4a" \
   --backend spokenly \
-  --model parakeetTDT06 \
+  --model apple-speech-analyzer \
   --formats txt,json \
   --json
 ```
 
-Parakeet TDT supports English `txt,json` output and does not accept transcription prompts. The command fails if Spokenly reports a different selected file model.
+Apple Speech Analyzer supports English `txt,json` output and does not accept transcription prompts. The command fails if Spokenly reports a different selected file model. NVIDIA Parakeet TDT remains available with `--model parakeetTDT06`.
 
 Preprocess long silence before retrying:
 
@@ -178,46 +177,42 @@ Wrap a transcript into an Obsidian note with frontmatter:
 
 ```sh
 transcribe-audio note ./transcripts/audio.txt \
-  --output "./inbox/walky-talky/Descriptive Title.md" \
+  --output "/path/to/vault/sources/voice-journal/Descriptive Title.md" \
   --title "Descriptive Title" \
   --date 2026-07-03 \
   --source "/path/to/audio.m4a" \
   --backend mlx-whisper \
-  --model large-v3 \
-  --raw-json ./transcripts/audio.json
+  --model large-v3
 ```
 
 ## Agent Workflow
 
-1. Run `transcribe-audio doctor --json`.
+1. Read the destination workflow and select its backend explicitly. For Hanif’s English vault imports, prefer `--backend spokenly --model apple-speech-analyzer`; the CLI default remains MLX. Run the matching doctor check.
 2. Use `discover` if the user points at a folder or vague location.
 3. Use `preprocess` when long silence is likely or quality warnings appear.
-4. Run `transcribe` with the MLX default and keep `txt,json` artifacts.
-5. For multiple independent files, use `batch --jobs 2` to parallelize raw
-   transcription only.
+4. Run `transcribe` with the selected backend/model and keep `txt,json` artifacts.
+5. For multiple independent files, use `batch`; MLX/whisper.cpp can use `--jobs 2` for raw transcription, while Spokenly requires one worker.
 6. Run `quality` on the text transcript.
-7. Run `review` on raw JSON when text looks garbled or names/tools are
-   uncertain. Use the same audio file that was transcribed, such as the
-   preprocessed/desilenced file when one was used.
-8. Use extracted clips and emitted re-transcription command arguments to compare
-   MLX and whisper.cpp outputs before correcting the note copy.
+7. When raw JSON contains timestamps, use `review` for garbled text or uncertain names/tools. Use the same audio that was transcribed, including the desilenced file when used.
+8. Inspect uncertain audio or use targeted re-transcription as evidence before correcting the note copy. Model agreement and quality warnings do not establish the original wording. The agent reviews and edits text directly.
 9. Choose a descriptive note title from the content.
-10. Run `note` with date, source, backend, model, and raw JSON provenance.
+10. Run `note` with the recording date, original source locator, backend and model. Include raw artifact paths only when the destination retains those files; for temporary evidence, put recording identity and quality warnings in the note instead.
 11. If warnings or review uncertainties remain, report them explicitly.
 
-## Agent Skill
+The destination owns reviewed-note creation, discovery scope, retention and downstream follow-up. For Hanif’s vault, read `sources/voice-journal/AGENTS.md`: save the reviewed Markdown note and any required daily link; keep intermediate TXT/JSON and derived audio in a temporary directory outside the vault and delete them after verification. Do not create raw folders or import ledgers there. Match recordings against existing note metadata before importing.
 
-This repo includes a public Codex-style skill at:
+## Optional import ledger
 
-```text
-skills/transcribe-audio-to-vault/SKILL.md
+Use this facility only for a destination whose owning workflow explicitly retains raw evidence and an import ledger. Hanif’s vault uses note metadata instead. The package defines a `walky-talky-ledger` entry point. From this checkout, use `python -m transcribe_audio.walky_talky_ledger`; its implementation is `transcribe_audio/walky_talky_ledger.py`. Run its `--help` and each subcommand’s help for required fields. `scan` finds unimported recordings, `append` records a completed import, and `cleanup-audio` removes derived audio within a completed raw run while preserving the supplied source.
+
+Automatic discovery defaults to Apple Voice Memos; it excludes deleted recordings and identifies imported sources by their saved hashes. Use `--root` only for a source Hanif supplies. A Voice Memos scan can specify the root explicitly:
+
+```sh
+python -m transcribe_audio.walky_talky_ledger scan --vault "/path/to/vault" \
+  --root "$HOME/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings" --json
 ```
 
-The skill gives agents a repeatable workflow for using this CLI to turn audio
-files into reviewed, sourced Markdown notes. Hanif's checked-in workflow selects
-Spokenly Parakeet TDT explicitly and keeps MLX `large-v3` as a quality or
-availability fallback. It assumes `transcribe-audio` is installed on `PATH` or
-can be run from a checkout with `uv run`.
+The ledger defaults to `.transcribe-audio/imports.jsonl` under the supplied vault. Append only after the reviewed note, raw TXT/JSON and any required journal link exist. Cleanup requires a single run under that vault’s `sources/walky-talky/raw/` and an existing original source; preserve original recordings and non-audio evidence. These commands do not authorize task extraction or downstream processing.
 
 ## Commands
 

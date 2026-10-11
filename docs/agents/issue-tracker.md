@@ -8,7 +8,7 @@ This repo tracks executable software work in GitHub Issues.
 | Remote | `git@github.com:HanifCarroll/transcribe-audio.git` |
 | CLI | `gh` |
 
-When a Matt Pocock skill says to publish to the issue tracker, use GitHub Issues for this repo.
+When the task authorizes publishing a work item, use GitHub Issues for this repo.
 
 Common commands:
 

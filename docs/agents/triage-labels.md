@@ -1,6 +1,6 @@
 # Triage Labels
 
-The Matt Pocock issue skills speak in canonical triage roles. Map them to these concrete labels in this repo.
+Use these category and state labels for issue triage; verify that the labels exist before applying them.
 
 | Role | Label |
 | --- | --- |
