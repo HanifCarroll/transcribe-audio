@@ -50,7 +50,7 @@ out of git.
 - [`ffmpeg`](https://ffmpeg.org/)
 - Apple Silicon for the default MLX backend
 - Optional: [Spokenly](https://spokenly.app/) with the requested Apple Speech Analyzer or Parakeet TDT file model selected and its local MCP bridge enabled
-- Optional: `whisper-cli` from [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
+- Optional: `whisper-cli` from [whisper.cpp](https://github.com/ggml-org/whisper.cpp)
   for fallback comparisons, SRT, and VTT output
 
 ## Install
